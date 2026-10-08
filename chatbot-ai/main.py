@@ -1,41 +1,34 @@
-import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from dotenv import load_dotenv
 from google import genai
+import os
+from dotenv import load_dotenv
 
-# .env file se API key load karein
+# Load environment variables from .env file
 load_dotenv()
-
-# Naya GenAI client initialize karein
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI()
 
+# Initialize Gemini Client
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    print("WARNING: GEMINI_API_KEY not found in .env file!")
+    
+client = genai.Client(api_key=api_key)
+
 class ChatRequest(BaseModel):
     message: str
-    user_id: int
 
-@app.get("/")
-def read_root():
-    return {"status": "Active", "message": "Python AI Microservice is running!"}
-
-@app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+@app.post("/generate")
+async def generate_response(request: ChatRequest):
     try:
-        # Pro ki jagah Flash model use karein jiski free limit zyada hai
+        # Yahan humne model ka naam change kar ke latest kar diya hai
         response = client.models.generate_content(
-            model="gemini-3.5-flash", 
-            contents=request.message
+            model='gemini-2.5-flash',
+            contents=request.message,
         )
-        
-        ai_reply = response.text
-
+        return {"ai_response": response.text}
+    
     except Exception as e:
-        ai_reply = f"API Error: {str(e)}"
-
-    return {
-        "status": "success",
-        "reply": ai_reply,
-        "user_id": request.user_id
-    }
+        print(f"Error during generation: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
