@@ -13,7 +13,7 @@ class ChatController extends Controller
     // 1. User ki saari sessions fetch karna (Sidebar ke liye)
     public function getSessions(Request $request)
     {
-        $sessions = $request->user()->chatSessions()->select('id', 'title')->get();
+        $sessions = $request->user()->chatSessions()->select('id', 'title', 'updated_at')->orderBy('updated_at', 'desc')->get();
         return response()->json($sessions);
     }
 
@@ -32,75 +32,63 @@ class ChatController extends Controller
     {
         $request->validate([
             'message' => 'required|string',
-            'session_id' => 'nullable|exists:chat_sessions,id'
+            'session_id' => 'nullable|exists:chat_sessions,id',
+            'parent_id' => 'nullable|exists:chat_messages,id' // NEW
         ]);
 
         $user = $request->user();
-        $isNewSession = false;
-        $dailyLimit = 15;
+        $dailyLimit = 100;
 
         $todayPrompts = ChatMessage::where('sender', 'user')
-            ->whereHas('session', function($q) use ($user) {
-                $q->where('user_id', $user->id);
-            })
+            ->whereHas('session', function($q) use ($user) { $q->where('user_id', $user->id); })
             ->whereDate('created_at', now()->toDateString())
             ->count();
 
         if ($todayPrompts >= $dailyLimit) {
-            return response()->json([
-                'ai_response' => "You've reached your daily limit of {$dailyLimit} prompts. Please upgrade to Pro or try again tomorrow!",
-                'limit_reached' => true
-            ]);
+            return response()->json(['ai_response' => "Daily limit reached.", 'limit_reached' => true]);
         }
 
-        // Agar session_id nahi aayi, toh naya session banayen
         if ($request->session_id) {
             $session = ChatSession::find($request->session_id);
         } else {
-            $isNewSession = true;
             $session = ChatSession::create([
                 'user_id' => $user->id,
-                // Pehle message ke shuru ke kuch words ko Title bana dein
-                'title' => Str::words($request->message, 4, '...') 
+                'title' => \Illuminate\Support\Str::words($request->message, 4, '...')
             ]);
         }
 
-        // User ka message database mein save karein
-        ChatMessage::create([
+        // Save User Message with parent_id
+        $userMsg = ChatMessage::create([
             'chat_session_id' => $session->id,
             'sender' => 'user',
-            'text' => $request->message
+            'text' => $request->message,
+            'parent_id' => $request->parent_id
         ]);
 
-        // Python AI API ko call karein (Port 8001)
         try {
-            $response = Http::post('http://127.0.0.1:8001/generate', [
-                // Yahan ensure karein ke Python API ko jo key chahiye (prompt ya message) wohi bhej rahe hain.
-                // Mostly hum 'message' ya 'prompt' use karte hain. Main yahan 'message' bhej raha hoon.
+            $response = Http::timeout(60)->post('http://127.0.0.1:8001/generate', [
                 'message' => $request->message 
             ]);
-
-            if ($response->successful()) {
-                // Python se response receive karein (key 'reply' ya 'ai_response' ho sakti hai)
-                $data = $response->json();
-                $aiText = $data['ai_response'] ?? $data['reply'] ?? "Error: Missing response key from Python.";
-            } else {
-                $aiText = "Sorry, the AI service is currently unavailable.";
-            }
+            $aiText = $response->successful() ? $response->json()['ai_response'] : "AI service unavailable.";
         } catch (\Exception $e) {
-            $aiText = "Error: Could not connect to Python AI Service.";
+            $aiText = "Connection error." . $e->getMessage();
         }
 
-        // AI ka response database mein save karein
-        ChatMessage::create([
+        // Save AI response attached to the new user message
+        $aiMsg = ChatMessage::create([
             'chat_session_id' => $session->id,
             'sender' => 'ai',
-            'text' => $aiText
+            'text' => $aiText,
+            'parent_id' => $userMsg->id
         ]);
+
+        $session->touch();
 
         return response()->json([
             'ai_response' => $aiText,
-            'session_id' => $session->id
+            'session_id' => $session->id,
+            'user_message_id' => $userMsg->id, // NEW
+            'ai_message_id' => $aiMsg->id // NEW
         ]);
     }
 
@@ -130,7 +118,7 @@ class ChatController extends Controller
 
     public function getLimit(Request $request)
     {
-        $dailyLimit = 15;
+        $dailyLimit = 100;
         $user = $request->user();
         
         $todayPrompts = ChatMessage::where('sender', 'user')
