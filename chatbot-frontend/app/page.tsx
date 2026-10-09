@@ -3,10 +3,13 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowUp, Loader2, Menu, SquarePen, Copy, Check, PanelLeftClose, PanelLeftOpen,
-  LogOut, Pencil, Trash2, Sparkles, Sun, Moon, Code2, Lightbulb, PenLine, Bug, ChevronLeft, ChevronRight
+  LogOut, Pencil, Trash2, Sparkles, Sun, Moon, Code2, Lightbulb, PenLine, Bug, ChevronLeft, ChevronRight,
+  Paperclip, Download, X, FileText, Square, BrainCircuit
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import dynamic from 'next/dynamic';
 import remarkGfm from 'remark-gfm';
+
+const ReactMarkdown = dynamic(() => import('react-markdown'), { ssr: false });
 
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/cjs/styles/hljs';
@@ -39,38 +42,39 @@ const SUGGESTIONS = [
   { icon: PenLine, title: 'Explain a concept', text: 'Explain middleware in Laravel with a simple example' },
 ];
 
+const LOADING_STATES = ["Validating logic...", "Gathering context...", "Analyzing request...", "Viewing references...", "Generating response..."];
+
 const CodeBlock = ({ language, value }: { language: string; value: string }) => {
   const [isCopied, setIsCopied] = useState(false);
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(value);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
+  const copyToClipboard = () => { navigator.clipboard.writeText(value); setIsCopied(true); setTimeout(() => setIsCopied(false), 2000); };
+  const downloadCode = () => {
+    const blob = new Blob([value], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    let ext = 'txt';
+    if(language === 'javascript' || language === 'js') ext = 'js'; else if(language === 'typescript' || language === 'ts') ext = 'ts';
+    else if(language === 'python' || language === 'py') ext = 'py'; else if(language === 'php') ext = 'php';
+    else if(language === 'html' || language === 'xml') ext = 'html'; else if(language === 'css') ext = 'css';
+    else if(language === 'json') ext = 'json';
+    a.download = `nexus_snippet.${ext}`; a.click(); URL.revokeObjectURL(url);
   };
   return (
     <div className="my-4 rounded-xl overflow-hidden border border-white/10 bg-[#282c34]">
       <div className="flex items-center justify-between px-4 py-2 bg-[#1f232a] text-xs text-zinc-400">
         <span className="font-mono">{language}</span>
-        <button onClick={copyToClipboard} className="flex items-center gap-1.5 hover:text-white transition-colors">
-          {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-          {isCopied ? 'Copied' : 'Copy code'}
-        </button>
+        <div className="flex gap-3">
+          <button onClick={downloadCode} className="flex items-center gap-1.5 hover:text-white transition-colors"><Download className="w-3.5 h-3.5" /> Download</button>
+          <button onClick={copyToClipboard} className="flex items-center gap-1.5 hover:text-white transition-colors">{isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}{isCopied ? 'Copied' : 'Copy'}</button>
+        </div>
       </div>
-      <div className="overflow-x-auto max-w-full custom-scrollbar">
-        <SyntaxHighlighter style={atomOneDark} language={language} PreTag="div" customStyle={{ margin: 0, padding: '16px', background: 'transparent', fontSize: '13.5px', lineHeight: 1.65 }}>
-          {value}
-        </SyntaxHighlighter>
-      </div>
+      <div className="overflow-x-auto max-w-full custom-scrollbar"><SyntaxHighlighter style={atomOneDark} language={language} PreTag="div" customStyle={{ margin: 0, padding: '16px', background: 'transparent', fontSize: '13.5px', lineHeight: 1.65 }}>{value}</SyntaxHighlighter></div>
     </div>
   );
 };
 
 const CopyButton = ({ text }: { text: string }) => {
   const [done, setDone] = useState(false);
-  return (
-    <button onClick={() => { navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1800); }} className="p-1.5 rounded-lg text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors" title="Copy">
-      {done ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-    </button>
-  );
+  return <button onClick={() => { navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1800); }} className="p-1.5 rounded-lg text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors" title="Copy">{done ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}</button>;
 };
 
 export default function Chatbot() {
@@ -78,49 +82,83 @@ export default function Chatbot() {
   const [user, setUser] = useState<any>(null);
   const [token, setToken] = useState<string | null>(null);
 
-  // Tree Message States for < 1 / 2 > branches
   const [rawMessages, setRawMessages] = useState<any[]>([]);
   const [branchSelections, setBranchSelections] = useState<Record<string, number>>({});
   
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingTextIndex, setLoadingTextIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   
-  const [sessions, setSessions] = useState<{ id: number; title: string, updated_at: string }[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // CHANGED: IDs to string for UUID
+  const [sessions, setSessions] = useState<{ id: string; title: string, updated_at: string }[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   
-  // Prompt Edit State
   const [editingMsgId, setEditingMsgId] = useState<number | null>(null);
   const [editMsgText, setEditMsgText] = useState('');
 
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [limits, setLimits] = useState({ used: 0, limit: 100, remaining: 100 });
+  const [limits, setLimits] = useState({ total_used: 0, total_limit: 100, total_remaining: 100, file_used: 0, file_limit: 5, file_remaining: 5 });
+
+  const [memoryText, setMemoryText] = useState('');
+  const [showMemoryModal, setShowMemoryModal] = useState(false);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
-  // Calculate Linear Thread from Tree Branches
+  useEffect(() => {
+    let interval: any;
+    if (isLoading) { setLoadingTextIndex(0); interval = setInterval(() => { setLoadingTextIndex(prev => (prev + 1) % LOADING_STATES.length); }, 2000); }
+    return () => clearInterval(interval);
+  }, [isLoading]);
+
+  const processedMessages = useMemo(() => {
+    const sorted = [...rawMessages].sort((a, b) => Number(a.id) - Number(b.id));
+    const firstModernMsgIndex = sorted.findIndex(msg => msg.parent_id != null);
+    
+    const linked = sorted.map((m, index) => {
+        if (m.parent_id == null && index > 0) {
+            if (firstModernMsgIndex === -1 || index < firstModernMsgIndex) return { ...m, parent_id: sorted[index - 1].id };
+        }
+        return m;
+    });
+
+    return linked.filter(m => {
+        if (m.sender === 'ai') return true;
+        const hasChild = linked.some(child => child.parent_id === m.id);
+        const isTemp = m.id > 1000000000000; 
+        return hasChild || isTemp; 
+    });
+  }, [rawMessages]);
+
   const currentThread = useMemo(() => {
     const thread = [];
-    const roots = rawMessages.filter(m => !m.parent_id).sort((a, b) => a.id - b.id);
+    const roots = processedMessages.filter(m => !m.parent_id);
     if (roots.length === 0) return thread;
 
-    let current = branchSelections['root'] ? rawMessages.find(m => m.id === branchSelections['root']) : roots[roots.length - 1];
+    let current = branchSelections['root'] ? processedMessages.find(m => m.id === branchSelections['root']) : roots[roots.length - 1];
 
     while (current) {
-      thread.push(current);
-      const children = rawMessages.filter(m => m.parent_id === current.id).sort((a, b) => a.id - b.id);
-      if (children.length === 0) break;
-      current = branchSelections[current.id] ? rawMessages.find(m => m.id === branchSelections[current.id]) : children[children.length - 1];
+        thread.push(current);
+        const children = processedMessages.filter(m => m.parent_id === current.id).sort((a, b) => Number(a.id) - Number(b.id));
+        if (children.length === 0) break;
+        current = branchSelections[current.id] ? processedMessages.find(m => m.id === branchSelections[current.id]) : children[children.length - 1];
     }
     return thread;
-  }, [rawMessages, branchSelections]);
+  }, [processedMessages, branchSelections]);
 
-  const updateURL = (chatId: number | null) => {
-    if (chatId) window.history.pushState(null, '', `/?c=${chatId}`);
+  const lastUserMsgId = currentThread.slice().reverse().find(m => m.sender === 'user')?.id;
+
+  // UPDATED URL HELPER: uses /c/uuid pattern
+  const updateURL = (chatId: string | null) => {
+    if (chatId) window.history.pushState(null, '', `/c/${chatId}`);
     else window.history.pushState(null, '', `/`);
   };
 
@@ -128,189 +166,165 @@ export default function Chatbot() {
     const initializeApp = async () => {
       const storedToken = localStorage.getItem('auth_token');
       const storedUser = localStorage.getItem('user');
-      
-      if (!storedToken || !storedUser) {
-        window.location.href = '/login'; 
-        return;
-      }
-      
-      // Setting these variables immediately removes the white loading screen!
+      if (!storedToken || !storedUser) { window.location.href = '/login'; return; }
       setToken(storedToken);
       setUser(JSON.parse(storedUser));
       
-      // Removed "await" to load APIs in background
+      setMemoryText(localStorage.getItem('nexus_memory') || '');
+
       fetchLimit(storedToken);
       fetchSessions(storedToken);
 
-      const params = new URLSearchParams(window.location.search);
-      const chatIdParam = params.get('c');
-      if (chatIdParam) loadSessionMessages(Number(chatIdParam), storedToken);
+      // UPDATED PATH PARSING
+      const path = window.location.pathname;
+      if (path.startsWith('/c/')) {
+        const chatIdHash = path.split('/c/')[1];
+        if (chatIdHash) loadSessionMessages(chatIdHash, storedToken);
+      }
     };
     
     initializeApp();
-
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
     if (savedTheme) setTheme(savedTheme);
     else if (window.matchMedia('(prefers-color-scheme: dark)').matches) setTheme('dark');
     if (window.innerWidth < 768) setSidebarOpen(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { scrollToBottom(); }, [currentThread, isLoading]);
+  useEffect(() => { scrollToBottom(); }, [currentThread, isLoading, selectedFile]);
 
-  const toggleTheme = () => {
-    const next = theme === 'light' ? 'dark' : 'light';
-    setTheme(next);
-    localStorage.setItem('theme', next);
-  };
+  const toggleTheme = () => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); localStorage.setItem('theme', next); };
+  const saveMemory = () => { localStorage.setItem('nexus_memory', memoryText); setShowMemoryModal(false); };
 
   const fetchLimit = async (authToken: string) => {
-    try {
-      const res = await fetch(`${API}/limit`, { headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' }, cache: 'no-store' });
-      if (res.ok) setLimits(await res.json());
-    } catch (error) { console.error('Failed to load limits'); }
+    try { const res = await fetch(`${API}/limit`, { headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' }, cache: 'no-store' }); if (res.ok) setLimits(await res.json()); } catch (error) {}
   };
-
   const fetchSessions = async (authToken: string) => {
-    try {
-      const res = await fetch(`${API}/sessions`, { headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' }, cache: 'no-store' });
-      if (res.ok) setSessions(await res.json());
-    } catch (error) { console.error('Failed to load sessions'); }
+    try { const res = await fetch(`${API}/sessions`, { headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' }, cache: 'no-store' }); if (res.ok) setSessions(await res.json()); } catch (error) {}
   };
 
-  const loadSessionMessages = async (sessionId: number, currentToken: string | null = token) => {
+  const loadSessionMessages = async (sessionId: string, currentToken: string | null = token) => {
     if (!currentToken) return;
-    setActiveSessionId(sessionId);
-    updateURL(sessionId);
-    setRawMessages([]);
-    setBranchSelections({});
-    if (window.innerWidth < 768) setSidebarOpen(false);
-    try {
-      const res = await fetch(`${API}/sessions/${sessionId}/messages`, { headers: { Authorization: `Bearer ${currentToken}`, Accept: 'application/json' }, cache: 'no-store' });
-      if (res.ok) setRawMessages(await res.json());
-    } catch (error) { console.error('Failed to load messages'); }
+    setActiveSessionId(sessionId); updateURL(sessionId); setRawMessages([]); setBranchSelections({}); if (window.innerWidth < 768) setSidebarOpen(false);
+    try { const res = await fetch(`${API}/sessions/${sessionId}/messages`, { headers: { Authorization: `Bearer ${currentToken}`, Accept: 'application/json' }, cache: 'no-store' }); if (res.ok) setRawMessages(await res.json()); } catch (error) {}
   };
 
-  const startNewChat = () => {
-    setActiveSessionId(null);
-    setRawMessages([]);
-    setBranchSelections({});
-    updateURL(null);
-    if (window.innerWidth < 768) setSidebarOpen(false);
+  const startNewChat = () => { setActiveSessionId(null); setRawMessages([]); setBranchSelections({}); setSelectedFile(null); updateURL(null); if (window.innerWidth < 768) setSidebarOpen(false); };
+
+  const deleteChat = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); if (!confirm('Are you sure you want to delete this chat?')) return;
+    try { const res = await fetch(`${API}/sessions/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); if (res.ok) { setSessions(sessions.filter((s) => s.id !== id)); if (activeSessionId === id) startNewChat(); } } catch (error) {}
   };
 
-  const deleteChat = async (id: number, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm('Are you sure you want to delete this chat?')) return;
-    try {
-      const res = await fetch(`${API}/sessions/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) {
-        setSessions(sessions.filter((s) => s.id !== id));
-        if (activeSessionId === id) startNewChat();
-      }
-    } catch (error) { console.error('Failed to delete chat'); }
+  const renameChat = async (id: string, e: React.MouseEvent | React.KeyboardEvent | React.FocusEvent) => {
+    e.stopPropagation(); if (!editTitle.trim()) return setEditingSessionId(null);
+    try { const res = await fetch(`${API}/sessions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ title: editTitle }) }); if (res.ok) { setSessions(sessions.map((s) => (s.id === id ? { ...s, title: editTitle } : s))); setEditingSessionId(null); } } catch (error) {}
   };
 
-  const renameChat = async (id: number, e: React.MouseEvent | React.KeyboardEvent | React.FocusEvent) => {
-    e.stopPropagation();
-    if (!editTitle.trim()) return setEditingSessionId(null);
-    try {
-      const res = await fetch(`${API}/sessions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ title: editTitle }) });
-      if (res.ok) {
-        setSessions(sessions.map((s) => (s.id === id ? { ...s, title: editTitle } : s)));
-        setEditingSessionId(null);
-      }
-    } catch (error) { console.error('Failed to rename chat'); }
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0]; if (file.size > 10 * 1024 * 1024) { alert("File size exceeds 10MB limit"); return; } setSelectedFile(file);
+    }
   };
 
-  // Upgraded Send Message (Handles editing versions and branching)
+  const stopGeneration = () => {
+    if (abortController) {
+      abortController.abort();
+      setIsLoading(false); setAbortController(null);
+      setRawMessages(prev => prev.filter(m => m.id < 1000000000000));
+    }
+  };
+
   const sendMessage = async (overrideText?: string, specificParentId?: number | null) => {
     const userMessage = (overrideText ?? input).trim();
-    if (!userMessage || !token || limits.remaining <= 0 || isLoading) return;
+    if (selectedFile && limits.file_remaining <= 0) return;
+    if (limits.total_remaining <= 0) return;
+    if ((!userMessage && !selectedFile) || !token || isLoading) return;
 
-    // Determine parent_id for the branch
     const lastMsg = currentThread.length > 0 ? currentThread[currentThread.length - 1] : null;
     const parentId = specificParentId !== undefined ? specificParentId : (lastMsg ? lastMsg.id : null);
 
-    setInput('');
-    setEditingMsgId(null);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    setInput(''); setEditingMsgId(null); if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsLoading(true);
 
-    // Optimistic UI Update
     const tempId = Date.now();
-    const newUserMsg = { id: tempId, sender: 'user', text: userMessage, parent_id: parentId };
+    const uiText = selectedFile ? `${userMessage}\n\n[Uploading: ${selectedFile.name}...]` : userMessage;
+    const newUserMsg = { id: tempId, sender: 'user', text: uiText, parent_id: parentId };
+    
     setRawMessages(prev => [...prev, newUserMsg]);
     setBranchSelections(prev => ({ ...prev, [parentId || 'root']: tempId }));
 
-    try {
-      const res = await fetch(`${API}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: userMessage, session_id: activeSessionId, parent_id: parentId }),
-      });
+    const formData = new FormData();
+    formData.append('message', userMessage || "Analyze this image.");
+    if (activeSessionId) formData.append('session_id', activeSessionId);
+    if (parentId) formData.append('parent_id', parentId.toString());
+    if (selectedFile) formData.append('attachment', selectedFile);
+    formData.append('memory', localStorage.getItem('nexus_memory') || '');
 
-      const data = await res.json();
+    const controller = new AbortController(); setAbortController(controller);
+
+    try {
+      const res = await fetch(`${API}/chat`, { method: 'POST', headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${token}` }, body: formData, signal: controller.signal });
+      let data; try { data = await res.json(); } catch (err) { throw new Error("Server error or File too large."); }
+
       if (res.ok) {
-        // Replace temp data with DB IDs
-        setRawMessages(prev => [
-          ...prev.filter(m => m.id !== tempId),
-          { id: data.user_message_id, sender: 'user', text: userMessage, parent_id: parentId },
-          { id: data.ai_message_id, sender: 'ai', text: data.ai_response || 'No response.', parent_id: data.user_message_id }
-        ]);
-        setBranchSelections(prev => ({ ...prev, [parentId || 'root']: data.user_message_id }));
-        
-        fetchLimit(token);
-        fetchSessions(token);
-        
-        if (!activeSessionId && data.session_id) {
-          setActiveSessionId(data.session_id);
-          updateURL(data.session_id);
+        const freshSessionId = data.session_id || activeSessionId;
+        if (freshSessionId) {
+           const refreshRes = await fetch(`${API}/sessions/${freshSessionId}/messages`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, cache: 'no-store' });
+           if(refreshRes.ok) { const allMsgs = await refreshRes.json(); setRawMessages(allMsgs); }
         }
+        setBranchSelections(prev => ({ ...prev, [parentId || 'root']: data.user_message_id }));
+        setSelectedFile(null); fetchLimit(token); fetchSessions(token);
+        if (!activeSessionId && data.session_id) { setActiveSessionId(data.session_id); updateURL(data.session_id); }
+      } else {
+        setRawMessages(prev => prev.filter(m => m.id !== tempId));
+        alert("Failed to send message: " + (data.message || data.ai_response || "Unknown server error"));
       }
-    } catch (error) { console.error("Message error"); } 
-    finally { setIsLoading(false); }
+    } catch (error: any) { 
+      if (error.name !== 'AbortError') alert("Error: " + error.message);
+      setRawMessages(prev => prev.filter(m => m.id !== tempId));
+    } finally { 
+      setIsLoading(false); setAbortController(null);
+    }
   };
 
   const groupedSessions = () => {
-    const groups: { label: string, data: typeof sessions }[] = [
-      { label: 'Today', data: [] }, { label: 'Previous 7 Days', data: [] }, { label: 'Previous 30 Days', data: [] }, { label: 'Older', data: [] },
-    ];
+    const groups: { label: string, data: typeof sessions }[] = [ { label: 'Today', data: [] }, { label: 'Previous 7 Days', data: [] }, { label: 'Previous 30 Days', data: [] }, { label: 'Older', data: [] } ];
     const now = new Date();
     sessions.forEach(session => {
       const diffDays = Math.ceil(Math.abs(now.getTime() - new Date(session.updated_at).getTime()) / (1000 * 60 * 60 * 24));
-      if (diffDays <= 1) groups[0].data.push(session);
-      else if (diffDays <= 7) groups[1].data.push(session);
-      else if (diffDays <= 30) groups[2].data.push(session);
-      else groups[3].data.push(session);
+      if (diffDays <= 1) groups[0].data.push(session); else if (diffDays <= 7) groups[1].data.push(session); else if (diffDays <= 30) groups[2].data.push(session); else groups[3].data.push(session);
     });
     return groups.filter(g => g.data.length > 0);
   };
 
-  const logout = () => {
-    localStorage.clear();
-    document.cookie = 'auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;';
-    window.location.href = '/login';
-  };
-
-  // Instant Loading State (Wait for user object but skip waiting for APIs)
+  const logout = () => { localStorage.clear(); document.cookie = 'auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;'; window.location.href = '/login'; };
   if (!user) return <div className="h-screen w-screen bg-white flex items-center justify-center"><Loader2 className="w-7 h-7 animate-spin text-indigo-500" /></div>;
 
-  const usedPct = Math.min(100, Math.round((limits.used / Math.max(limits.limit, 1)) * 100));
-  const lowLimit = limits.remaining <= 3;
-  const limitReached = limits.remaining <= 0;
-
-  const UserAvatar = ({ size = 'w-8 h-8' }: { size?: string }) =>
-    user.profile_image ? (
-      <img src={user.profile_image} alt="User" className={`${size} rounded-full object-cover`} />
-    ) : (
-      <div className={`${size} rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-sm font-semibold`}>
-        {user.name.charAt(0).toUpperCase()}
-      </div>
-    );
+  const totalLimitReached = limits.total_remaining <= 0;
+  const fileLimitReached = limits.file_remaining <= 0;
+  const UserAvatar = ({ size = 'w-8 h-8' }: { size?: string }) => user.profile_image ? ( <img src={user.profile_image} alt="User" className={`${size} rounded-full object-cover`} /> ) : ( <div className={`${size} rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-sm font-semibold`}>{user.name.charAt(0).toUpperCase()}</div> );
 
   return (
     <div data-theme={theme} className="nx-root flex h-screen overflow-hidden font-sans">
       {sidebarOpen && <div className="fixed inset-0 bg-black/40 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />}
+      
+      {showMemoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 nx-fade">
+          <div className="bg-[var(--bg)] border border-[var(--border)] w-full max-w-lg rounded-3xl p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold flex items-center gap-2"><BrainCircuit className="w-5 h-5 text-indigo-500"/> Custom Instructions</h3>
+              <button onClick={() => setShowMemoryModal(false)} className="p-1 hover:bg-[var(--hover)] rounded-full text-[var(--muted)] transition-colors"><X className="w-5 h-5"/></button>
+            </div>
+            <p className="text-sm text-[var(--muted)] mb-4">What would you like Nexus AI to know about you to provide better responses? (e.g., "I am a Laravel backend developer from Lahore. Give short answers.")</p>
+            <textarea className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 text-[15px] text-[var(--text)] focus:outline-none focus:border-indigo-500 resize-none custom-scrollbar" rows={5} placeholder="Enter your instructions here..." value={memoryText} onChange={(e) => setMemoryText(e.target.value)} />
+            <div className="flex justify-end gap-3 mt-5">
+              <button onClick={() => setShowMemoryModal(false)} className="px-4 py-2 rounded-xl text-sm font-medium hover:bg-[var(--surface)] text-[var(--text)] transition-colors">Cancel</button>
+              <button onClick={saveMemory} className="px-4 py-2 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white transition-colors">Save Memory</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <aside className={`fixed md:relative z-40 h-full flex flex-col bg-[var(--sidebar)] border-r border-[var(--border)] transition-all duration-300 ease-in-out overflow-hidden ${sidebarOpen ? 'w-[272px] translate-x-0' : 'w-[272px] -translate-x-full md:translate-x-0 md:w-0 md:border-r-0'}`}>
         <div className="w-[272px] h-full flex flex-col">
@@ -354,23 +368,25 @@ export default function Chatbot() {
             ))}
           </div>
 
-          <div className="p-3 border-t border-[var(--border)] space-y-3">
-            <div className="px-1">
+          <div className="p-4 border-t border-[var(--border)] space-y-4">
+            <div>
               <div className="flex items-center justify-between text-xs mb-1.5">
-                <span className="text-[var(--muted)]">Daily prompts</span>
-                <span className={lowLimit ? 'text-rose-500 font-medium' : 'text-[var(--muted)]'}>{limits.remaining} left</span>
+                <span className="text-[var(--muted)]">Daily Prompts</span>
+                <span className={limits.total_remaining <= (limits.total_limit * 0.1) ? 'text-rose-500 font-medium' : 'text-[var(--muted)]'}>{limits.total_remaining} / {limits.total_limit}</span>
               </div>
               <div className="h-1.5 rounded-full bg-[var(--active)] overflow-hidden">
-                <div className={`h-full rounded-full transition-all duration-500 ${lowLimit ? 'bg-rose-500' : 'bg-indigo-500'}`} style={{ width: `${usedPct}%` }} />
+                <div className={`h-full rounded-full transition-all duration-500 ${limits.total_remaining <= (limits.total_limit * 0.1) ? 'bg-rose-500' : 'bg-indigo-500'}`} style={{ width: `${Math.min(100, (limits.total_used / Math.max(limits.total_limit, 1)) * 100)}%` }} />
               </div>
+              <p className="text-[10px] text-[var(--muted)] mt-1.5 text-center font-medium">Max {limits.file_limit} files per day ({limits.file_remaining} left)</p>
             </div>
-            <div className="flex items-center gap-2 px-1">
+            <div className="flex items-center gap-1.5 pt-1">
               <UserAvatar />
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 pr-1">
                 <p className="text-sm font-medium text-[var(--text)] truncate">{user.name}</p>
                 <p className="text-xs text-[var(--muted)]">Nexus Pro</p>
               </div>
-              <button onClick={toggleTheme} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors md:hidden"> {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />} </button>
+              <button onClick={() => setShowMemoryModal(true)} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-indigo-500 transition-colors" title="Memory Settings"><BrainCircuit className="w-4 h-4" /></button>
+              <button onClick={toggleTheme} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors">{theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}</button>
               <button onClick={logout} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-rose-500 transition-colors"><LogOut className="w-4 h-4" /></button>
             </div>
           </div>
@@ -378,9 +394,7 @@ export default function Chatbot() {
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 bg-[var(--bg)] relative overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0" aria-hidden>
-          <div className="nx-blob nx-b1" /><div className="nx-blob nx-b2" /><div className="nx-blob nx-b3" /><div className="nx-blob nx-b4" /><div className="nx-blob nx-b5" />
-        </div>
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0" aria-hidden><div className="nx-blob nx-b1" /><div className="nx-blob nx-b2" /><div className="nx-blob nx-b3" /><div className="nx-blob nx-b4" /><div className="nx-blob nx-b5" /></div>
 
         <header className="relative z-10 h-14 flex items-center justify-between px-3 sm:px-4 shrink-0">
           <div className="flex items-center gap-1">
@@ -390,12 +404,12 @@ export default function Chatbot() {
                 <button onClick={startNewChat} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors"><SquarePen className="w-5 h-5" /></button>
               </>
             )}
-            <div className="flex items-center gap-2 px-2">
-              <span className="font-semibold text-[var(--text)]">Nexus AI</span>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--surface)] text-[var(--muted)] border border-[var(--border)]">Flash</span>
-            </div>
+            <div className="flex items-center gap-2 px-2"><span className="font-semibold text-[var(--text)]">Nexus AI</span><span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--surface)] text-[var(--muted)] border border-[var(--border)]">Flash</span></div>
           </div>
-          <button onClick={toggleTheme} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors md:hidden"> {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />} </button>
+          <div className="flex items-center gap-1 md:hidden">
+            <button onClick={() => setShowMemoryModal(true)} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors"><BrainCircuit className="w-5 h-5" /></button>
+            <button onClick={toggleTheme} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors">{theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}</button>
+          </div>
         </header>
 
         <div className="relative z-10 flex-1 overflow-y-auto custom-scrollbar">
@@ -407,10 +421,8 @@ export default function Chatbot() {
                 <p className="text-[var(--muted)] mt-2 text-base sm:text-lg">How can I help you today?</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-10 w-full max-w-2xl">
                   {SUGGESTIONS.map((s) => (
-                    <button key={s.title} onClick={() => sendMessage(s.text)} disabled={limitReached} className="text-left p-4 rounded-2xl border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--hover)] transition-colors group disabled:opacity-50">
-                      <s.icon className="w-5 h-5 text-indigo-500 mb-2.5" />
-                      <p className="text-sm font-medium text-[var(--text)]">{s.title}</p>
-                      <p className="text-[13px] text-[var(--muted)] mt-0.5 line-clamp-2">{s.text}</p>
+                    <button key={s.title} onClick={() => sendMessage(s.text)} disabled={totalLimitReached} className="text-left p-4 rounded-2xl border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--hover)] transition-colors group disabled:opacity-50">
+                      <s.icon className="w-5 h-5 text-indigo-500 mb-2.5" /><p className="text-sm font-medium text-[var(--text)]">{s.title}</p><p className="text-[13px] text-[var(--muted)] mt-0.5 line-clamp-2">{s.text}</p>
                     </button>
                   ))}
                 </div>
@@ -418,29 +430,32 @@ export default function Chatbot() {
             ) : (
               <div className="pt-4 space-y-8">
                 {currentThread.map((msg) => {
-                  // Setup < 1 / 2 > controls
-                  const siblings = rawMessages.filter(m => m.parent_id === msg.parent_id).sort((a,b) => a.id - b.id);
+                  const siblings = processedMessages.filter(m => m.parent_id === msg.parent_id).sort((a,b) => Number(a.id) - Number(b.id));
                   const currentIndex = siblings.findIndex(m => m.id === msg.id);
                   const hasSiblings = siblings.length > 1;
+                  const isHighlighted = msg.id === lastUserMsgId;
 
                   return msg.sender === 'user' ? (
-                    <div key={msg.id} className="flex flex-col items-end nx-fade group">
+                    <div key={msg.id} className={`flex flex-col items-end nx-fade group ${isHighlighted ? 'nx-prompt-highlight' : ''}`}>
                       {editingMsgId === msg.id ? (
                         <div className="w-full bg-[var(--surface)] p-4 rounded-3xl mb-2">
-                           <textarea autoFocus value={editMsgText} onChange={(e) => setEditMsgText(e.target.value)} className="w-full bg-transparent text-[var(--text)] resize-none outline-none custom-scrollbar" rows={3} />
+                           <textarea autoFocus value={editMsgText} onChange={(e) => setEditMsgText(e.target.value)} className="w-full bg-transparent text-[var(--text)] resize-none outline-none custom-scrollbar" rows={4} />
                            <div className="flex justify-end gap-2 mt-2">
-                             <button onClick={() => setEditingMsgId(null)} className="px-3 py-1.5 rounded-lg text-sm text-[var(--muted)] hover:bg-[var(--hover)]">Cancel</button>
-                             <button onClick={() => sendMessage(editMsgText, msg.parent_id)} className="px-3 py-1.5 rounded-lg text-sm bg-indigo-600 text-white hover:bg-indigo-700 font-medium">Send</button>
+                             <button onClick={() => setEditingMsgId(null)} className="px-3 py-1.5 rounded-lg text-sm text-[var(--muted)] hover:bg-[var(--hover)] transition-colors">Cancel</button>
+                             <button onClick={() => sendMessage(editMsgText, msg.parent_id)} className="px-3 py-1.5 rounded-lg text-sm bg-indigo-600 text-white hover:bg-indigo-700 font-medium transition-colors">Send</button>
                            </div>
                         </div>
                       ) : (
-                        <div className="relative max-w-[85%] sm:max-w-[75%] px-4 py-2.5 rounded-3xl bg-[var(--surface)] text-[var(--text)] text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-                          {msg.text}
-                          <button onClick={() => { setEditMsgText(msg.text); setEditingMsgId(msg.id); }} className="absolute -left-10 top-2 p-1.5 text-[var(--muted)] hover:text-indigo-500 hover:bg-[var(--surface)] rounded-full opacity-0 group-hover:opacity-100 transition-all"><Pencil className="w-4 h-4" /></button>
+                        <div className={`relative max-w-[85%] sm:max-w-[75%] px-4 py-2.5 rounded-3xl bg-[var(--surface)] text-[var(--text)] text-[15px] leading-relaxed whitespace-pre-wrap break-words transition-all duration-500 ${isHighlighted ? 'ring-2 ring-indigo-500/50 shadow-lg shadow-indigo-500/20' : ''}`}>
+                          <div className="md-content">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img({ node, ...props }: any) { return <img {...props} className="max-w-[280px] sm:max-w-[400px] max-h-[350px] rounded-xl my-2 border-2 border-[var(--border)] shadow-md object-contain bg-[var(--surface)]" loading="lazy" alt="Attachment" />; } }}>
+                              {msg.text}
+                            </ReactMarkdown>
+                          </div>
+                          <button onClick={() => { setEditMsgText(msg.text.replace(/\[Attached File: .*\]/, '').replace(/!\[.*?\]\(.*?\)/, '').trim()); setEditingMsgId(msg.id); }} className="absolute -left-10 top-2 p-1.5 text-[var(--muted)] hover:text-indigo-500 hover:bg-[var(--surface)] rounded-full opacity-0 group-hover:opacity-100 transition-all"><Pencil className="w-4 h-4" /></button>
                         </div>
                       )}
                       
-                      {/* < 1 / 2 > Paginator */}
                       {hasSiblings && (
                         <div className="flex items-center gap-1 mt-1 text-[11px] text-[var(--muted)] font-medium">
                           <button onClick={() => setBranchSelections(prev => ({...prev, [msg.parent_id || 'root']: siblings[currentIndex - 1].id}))} disabled={currentIndex === 0} className="p-1 hover:text-[var(--text)] disabled:opacity-30 transition-colors"><ChevronLeft className="w-3.5 h-3.5" /></button>
@@ -455,11 +470,9 @@ export default function Chatbot() {
                       <div className="flex-1 min-w-0">
                         <div className="md-content text-[15px] text-[var(--text)]">
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                              code({ node, inline, className, children, ...props }: any) {
-                                const match = /language-(\w+)/.exec(className || '');
-                                return !inline && match ? <CodeBlock language={match[1]} value={String(children).replace(/\n$/, '')} /> : <code {...props} className="inline-code">{children}</code>;
-                              },
+                              code({ node, inline, className, children, ...props }: any) { const match = /language-(\w+)/.exec(className || ''); return !inline && match ? <CodeBlock language={match[1]} value={String(children).replace(/\n$/, '')} /> : <code {...props} className="inline-code">{children}</code>; },
                               a({ node, children, ...props }: any) { return <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>; },
+                              img({ node, ...props }: any) { return <img {...props} className="max-w-[280px] sm:max-w-[400px] max-h-[350px] rounded-xl my-2 border-2 border-[var(--border)] shadow-md object-contain bg-[var(--surface)]" loading="lazy" alt="Attachment" />; }
                             }}
                           >
                             {msg.text}
@@ -474,7 +487,9 @@ export default function Chatbot() {
                 {isLoading && (
                   <div className="flex gap-3 sm:gap-4 nx-fade">
                     <div className="shrink-0 mt-0.5 w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center"><Sparkles className="w-4 h-4 text-white animate-pulse" /></div>
-                    <div className="flex items-center gap-1.5 h-8"><span className="nx-dot" /><span className="nx-dot" style={{ animationDelay: '150ms' }} /><span className="nx-dot" style={{ animationDelay: '300ms' }} /></div>
+                    <div className="flex items-center gap-2 h-8">
+                       <span className="text-[13px] font-semibold text-indigo-500 animate-pulse">{LOADING_STATES[loadingTextIndex]}</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -485,31 +500,47 @@ export default function Chatbot() {
 
         <div className="relative z-10 shrink-0 px-4 sm:px-6 pb-4 pt-2">
           <div className="max-w-3xl mx-auto">
-            {lowLimit && !limitReached && <p className="text-center text-xs text-rose-500 mb-2">Only {limits.remaining} prompt{limits.remaining === 1 ? '' : 's'} left today</p>}
+            {limits.total_remaining <= 10 && !totalLimitReached && <p className="text-center text-xs text-rose-500 mb-2">Only {limits.total_remaining} prompt{limits.total_remaining === 1 ? '' : 's'} left today</p>}
+            {limits.file_remaining <= 1 && selectedFile && <p className="text-center text-xs text-rose-500 mb-2">Only {limits.file_remaining} file upload{limits.file_remaining === 1 ? '' : 's'} left today</p>}
+            
+            {selectedFile && (
+              <div className="mb-3 inline-block">
+                {selectedFile.type.startsWith('image/') ? (
+                  <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border-2 border-[var(--border)] shadow-md">
+                    <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-full h-full object-cover" />
+                    <button onClick={() => setSelectedFile(null)} className="absolute top-1.5 right-1.5 bg-black/60 hover:bg-rose-500 text-white p-1 rounded-full backdrop-blur-md transition-colors"><X className="w-3 h-3" /></button>
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center gap-2 bg-[var(--surface)] border border-[var(--border)] rounded-full px-3 py-1.5 text-xs text-[var(--text)] shadow-sm">
+                    <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                    <span className="max-w-[200px] truncate font-medium">{selectedFile.name}</span>
+                    <button onClick={() => setSelectedFile(null)} className="p-0.5 hover:bg-[var(--border)] rounded-full transition-colors"><X className="w-3.5 h-3.5" /></button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className={`nx-glow relative ${isLoading ? 'nx-glow-on' : ''}`}>
             <div className="nx-glow-bg" />
             <div className="relative flex items-end gap-2 bg-[var(--surface)] rounded-[28px] px-3 py-2 border border-transparent focus-within:border-[var(--border)] transition-colors">
+              
+              <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.json,.js,.ts,.php,.py,.html,.css,.jpg,.jpeg,.png,.gif,.webp" />
+              <button onClick={() => fileInputRef.current?.click()} disabled={fileLimitReached || totalLimitReached || isLoading} className="mb-1.5 p-1.5 rounded-full text-[var(--muted)] hover:text-indigo-500 hover:bg-[var(--bg)] transition-colors disabled:opacity-50" title={`Attach file (Max ${limits.file_limit} files per day)`}>
+                <Paperclip className="w-5 h-5" />
+              </button>
+
               <textarea
                 ref={textareaRef}
-                className="flex-1 max-h-48 py-2.5 px-2 bg-transparent text-[var(--text)] placeholder:text-[var(--muted)] focus:outline-none resize-none overflow-y-auto text-[15px] leading-6 custom-scrollbar"
-                placeholder={limitReached ? 'Daily limit reached. See you tomorrow!' : 'Message Nexus AI'}
+                className="flex-1 max-h-48 py-2.5 px-1 bg-transparent text-[var(--text)] placeholder:text-[var(--muted)] focus:outline-none resize-none overflow-y-auto text-[15px] leading-6 custom-scrollbar"
+                placeholder={totalLimitReached ? 'Daily prompt limit reached.' : (selectedFile && fileLimitReached ? 'File limit reached for today.' : 'Message Nexus AI')}
                 rows={1}
                 value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  e.target.style.height = 'auto';
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`;
-                }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                disabled={limitReached}
+                onChange={(e) => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`; }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); isLoading ? stopGeneration() : sendMessage(); } }}
+                disabled={totalLimitReached}
               />
-              <button
-                onClick={() => sendMessage()}
-                disabled={isLoading || !input.trim() || limitReached}
-                className="mb-1 w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-[var(--text)] text-[var(--bg)] disabled:opacity-25 hover:opacity-80 transition-opacity active:scale-95"
-                title="Send"
-              >
-                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-[18px] h-[18px]" strokeWidth={2.5} />}
+              <button onClick={isLoading ? stopGeneration : () => sendMessage()} disabled={(!isLoading && !input.trim() && !selectedFile) || totalLimitReached} className="mb-1 w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-[var(--text)] text-[var(--bg)] disabled:opacity-25 hover:opacity-80 transition-opacity active:scale-95" title={isLoading ? "Stop generating" : "Send"}>
+                {isLoading ? <Square className="w-3.5 h-3.5" fill="currentColor" /> : <ArrowUp className="w-[18px] h-[18px]" strokeWidth={2.5} />}
               </button>
             </div>
             </div>
@@ -519,29 +550,11 @@ export default function Chatbot() {
       </main>
 
       <style jsx global>{`
-        .nx-root[data-theme='light'] {
-          --bg: #ffffff;
-          --sidebar: #f9f9f9;
-          --surface: #f4f4f5;
-          --hover: #ececee;
-          --active: #e4e4e7;
-          --border: #e4e4e7;
-          --text: #18181b;
-          --muted: #71717a;
-          --inline-bg: #f1f1f3;
-        }
-        .nx-root[data-theme='dark'] {
-          --bg: #212121;
-          --sidebar: #171717;
-          --surface: #2f2f2f;
-          --hover: #2a2a2a;
-          --active: #343434;
-          --border: #3a3a3a;
-          --text: #ececec;
-          --muted: #a1a1aa;
-          --inline-bg: #343434;
-        }
+        .nx-root[data-theme='light'] { --bg: #ffffff; --sidebar: #f9f9f9; --surface: #f4f4f5; --hover: #ececee; --active: #e4e4e7; --border: #e4e4e7; --text: #18181b; --muted: #71717a; --inline-bg: #f1f1f3; }
+        .nx-root[data-theme='dark'] { --bg: #212121; --sidebar: #171717; --surface: #2f2f2f; --hover: #2a2a2a; --active: #343434; --border: #3a3a3a; --text: #ececec; --muted: #a1a1aa; --inline-bg: #343434; }
         .nx-root { background: var(--bg); color: var(--text); }
+
+        .md-content img { max-width: 100%; max-height: 350px; border-radius: 12px; margin: 0.5em 0; border: 2px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.08); object-fit: contain; background: var(--surface); }
 
         .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
@@ -549,77 +562,29 @@ export default function Chatbot() {
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
         .nx-fade { animation: nxFade 0.35s ease both; }
-        @keyframes nxFade {
-          from { opacity: 0; transform: translateY(8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .nx-dot {
-          width: 7px; height: 7px; border-radius: 9999px;
-          background: var(--muted);
-          animation: nxBounce 1.1s infinite ease-in-out;
-        }
-        @keyframes nxBounce {
-          0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
-          40% { transform: translateY(-5px); opacity: 1; }
-        }
+        @keyframes nxFade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
-        .nx-blob {
-          position: absolute;
-          border-radius: 9999px;
-          filter: blur(90px);
-          opacity: 0.4;
-          will-change: transform;
-        }
+        .nx-prompt-highlight { animation: promptGlow 2.5s ease-out; }
+        @keyframes promptGlow { 0% { filter: drop-shadow(0 0 15px rgba(99,102,241, 0.4)); } 50% { filter: drop-shadow(0 0 8px rgba(99,102,241, 0.2)); } 100% { filter: drop-shadow(0 0 0px transparent); } }
+
+        .nx-blob { position: absolute; border-radius: 9999px; filter: blur(90px); opacity: 0.4; will-change: transform; }
         .nx-root[data-theme='dark'] .nx-blob { opacity: 0.22; }
         .nx-b1 { width: 520px; height: 520px; top: -18%; left: -10%; background: #4285f4; animation: nxFloat1 20s ease-in-out infinite; }
         .nx-b2 { width: 480px; height: 480px; top: -10%; right: -8%; background: #9b72f2; animation: nxFloat2 24s ease-in-out infinite; }
         .nx-b3 { width: 520px; height: 520px; bottom: -22%; left: 22%; background: #ff6ac1; animation: nxFloat3 22s ease-in-out infinite; }
         .nx-b4 { width: 420px; height: 420px; bottom: -12%; right: -6%; background: #ffb347; animation: nxFloat1 26s ease-in-out infinite reverse; }
         .nx-b5 { width: 380px; height: 380px; top: 35%; left: 8%; background: #34d3c0; animation: nxFloat2 28s ease-in-out infinite reverse; }
-        @keyframes nxFloat1 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(80px, 60px) scale(1.15); }
-          66% { transform: translate(-40px, 90px) scale(0.92); }
-        }
-        @keyframes nxFloat2 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(-90px, 50px) scale(1.1); }
-          66% { transform: translate(50px, -40px) scale(0.95); }
-        }
-        @keyframes nxFloat3 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(110px, -70px) scale(1.2); }
-        }
+        @keyframes nxFloat1 { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(80px, 60px) scale(1.15); } 66% { transform: translate(-40px, 90px) scale(0.92); } }
+        @keyframes nxFloat2 { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(-90px, 50px) scale(1.1); } 66% { transform: translate(50px, -40px) scale(0.95); } }
+        @keyframes nxFloat3 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(110px, -70px) scale(1.2); } }
 
-        .nx-gradient-text {
-          background: linear-gradient(90deg, #4285f4, #9b72f2, #d96570, #f9ab00, #4285f4);
-          background-size: 200% auto;
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
-          animation: nxTextSlide 6s linear infinite;
-        }
+        .nx-gradient-text { background: linear-gradient(90deg, #4285f4, #9b72f2, #d96570, #f9ab00, #4285f4); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; color: transparent; animation: nxTextSlide 6s linear infinite; }
         @keyframes nxTextSlide { to { background-position: 200% center; } }
 
-        .nx-glow-bg {
-          position: absolute;
-          inset: -2px;
-          border-radius: 30px;
-          background: linear-gradient(90deg, #4285f4, #9b72f2, #d96570, #f9ab00, #34a853, #4285f4);
-          background-size: 300% 100%;
-          filter: blur(10px);
-          opacity: 0;
-          transition: opacity 0.4s ease;
-          animation: nxGlowSlide 4s linear infinite;
-          pointer-events: none;
-        }
-        .nx-glow:focus-within .nx-glow-bg,
-        .nx-glow-on .nx-glow-bg { opacity: 0.55; }
+        .nx-glow-bg { position: absolute; inset: -2px; border-radius: 30px; background: linear-gradient(90deg, #4285f4, #9b72f2, #d96570, #f9ab00, #34a853, #4285f4); background-size: 300% 100%; filter: blur(10px); opacity: 0; transition: opacity 0.4s ease; animation: nxGlowSlide 4s linear infinite; pointer-events: none; }
+        .nx-glow:focus-within .nx-glow-bg, .nx-glow-on .nx-glow-bg { opacity: 0.55; }
         @keyframes nxGlowSlide { to { background-position: 300% 0; } }
-
-        @media (prefers-reduced-motion: reduce) {
-          .nx-blob, .nx-gradient-text, .nx-glow-bg { animation: none; }
-        }
+        @media (prefers-reduced-motion: reduce) { .nx-blob, .nx-gradient-text, .nx-glow-bg { animation: none; } }
 
         .md-content { line-height: 1.75; word-break: break-word; }
         .md-content > *:first-child { margin-top: 0; }
